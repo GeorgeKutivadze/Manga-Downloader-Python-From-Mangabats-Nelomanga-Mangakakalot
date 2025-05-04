@@ -61,9 +61,10 @@ from selenium.common.exceptions import (
 
 
 # Base directory for manga storage
-
-base_dir = r"E:\Z Mangas"
-seven_zip_path = r"C:\Program Files\7-Zip\7z.exe"  # Ensure path uses raw string or double backslashes
+base_dir = r"E:\Z Mangas" # Write Path Here TO save It where You Wish
+seven_zip_path = r"C:\Program Files\7-Zip\7z.exe"  # This is essential for creating CBZ files in Correct Format to Work in Kavita As well, without it it may work but kavita won't register it
+chromedriver_path = r"C:\\chromedriver\\chromedriver.exe"
+User_Agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
 
 
 
@@ -76,43 +77,37 @@ def headers(manga_url_main: str | None = None, base_url: str | None = None, imag
         
         header_dict = {
             "Authority":base_url,
-            "method": "GET",
+            "Method": "GET",
             "Path": image_path,
             "scheme": "https",
             "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
             "Accept-Encoding": "gzip, deflate, br, zstd",
             "Accept-Language": "en-US,en;q=0.9,ka-GE;q=0.8,ka;q=0.7,ru-RU;q=0.6,ru;q=0.5",
+            "Dnt": "1",
+            "Priority": "i",
             "Referer": manga_url_main,
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+            "sec-ch-ua": '"Chromium";v="136", "Google Chrome";v="136", "Not.A/Brand";v="99"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
+            "Sec-Fetch-Dest": "image",
+            "Sec-Fetch-Mode": "no-cors",
+            "Sec-Fetch-Site": "cross-site",
+            "Sec-Fetch-Storage-Access": "active",            
+            "User-Agent": User_Agent,
 
+
+            "Request URL": image_url,
+            "Request Method": "GET",
+            "Referrer-Policy": "strict-origin-when-cross-origin",
         }
 
     else:
-        header_dict["User-Agent"]="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+        header_dict = {}
+        header_dict["User-Agent"]=User_Agent
         header_dict["Referer"] = ""
 
 
     return header_dict
-
-
-
-'''
-"Priority": "i",
-"Dnt": "1",
-"sec-ch-ua": '"Chromium";v="136", "Google Chrome";v="136", "Not.A/Brand";v="99"',
-"sec-ch-ua-platform": '"Windows"',
-"Priority": "i",
-"Sec-Fetch-Dest": "image",
-"Sec-Fetch-Mode": "no-cors",
-"Sec-Fetch-Site": "cross-site",      
-"Sec-Fetch-Storage-Access": "active", 
-
-
-
-"Request URL": image_url,
-"Request Method": "GET",
-"Referrer-Policy": "strict-origin-when-cross-origin",'''
-
 
 def split_image_url(img_url: str) -> tuple[str, str]:
 
@@ -153,14 +148,14 @@ def init_selenium():
     chrome_options.add_experimental_option("useAutomationExtension", False)
 
 
-    chromedriver_path = r"C:\\chromedriver\\chromedriver.exe"
-    service = Service(chromedriver_path)
+    chromedriver_path1 = chromedriver_path
+    service = Service(chromedriver_path1)
 
     driver = webdriver.Chrome(service=service, options=chrome_options)
 
     driver.execute_cdp_cmd("Network.enable", {})
     driver.execute_cdp_cmd("Network.setUserAgentOverride", {
-        "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+        "userAgent": User_Agent
     })
 
     return driver
@@ -173,12 +168,6 @@ def human_like_interaction(driver):
     time.sleep(random.uniform(1, 3))
     driver.execute_script("window.scrollTo(0, 0);")
     time.sleep(random.uniform(2, 5))
-
-
-
-
-
-
 
 def sanitize_filename(filename):
     return re.sub(r'[<>:"/\\|?*]', '', filename)
@@ -1699,44 +1688,105 @@ def download_manga(url, manga_title = None):
                 img_url_list.append(img_url)
 
 
-        def get_retry_session():
-            adapter = HTTPAdapter(max_retries=Retry(5))
-            session = requests.Session()
-            session.mount("http://", adapter)
-            session.mount("https://", adapter)
-            return session
+        def get_retry_session(max_retries=5, backoff_factor=1.5, status_forcelist=(500, 502, 503, 504, 520, 522, 524)):
+                session = requests.Session()
+                retry = Retry(
+                    total=max_retries,
+                    read=max_retries,
+                    connect=max_retries,
+                    backoff_factor=backoff_factor,
+                    status_forcelist=status_forcelist,
+                    raise_on_status=False,
+                    respect_retry_after_header=True,
+                )
+                adapter = HTTPAdapter(max_retries=retry)
+                session.mount('http://', adapter)
+                session.mount('https://', adapter)
+                return session
 
-        def download_image(img_url, img_name, manga_dir, headers, progress, lock):
+        def save_image(file_path, content):
+            with open(file_path, "wb") as f:
+                for chunk in content:
+                    if chunk:  # make sure it's not a keep-alive chunk
+                        f.write(chunk)
+
+
+        def download_image(img_url, img_name, manga_dir, headers, progress, lock, img_url_img_fail, img_url_img_fail_set, TRY2=False):
             img_file_path = os.path.join(manga_dir, img_name)
             session = get_retry_session()
-            for attempt in range(5):
-                try:
-                    img_file = session.get(img_url, headers=headers, stream=True, timeout=10)
-                    if img_file.status_code == 200:
-                        with open(img_file_path, "wb") as file:
-                            for chunk in img_file.iter_content(1024):
-                                file.write(chunk)
 
+            max_attempts = 10 if TRY2 else 2
+
+            for attempt in range(max_attempts):
+                try:
+                    if TRY2:
+                        response = requests.get(img_url, headers=headers)
+                    else:
+                        response = session.get(img_url, headers=headers)
+
+                    if response.status_code == 200:
+                        if attempt > 0:
+                            print(f"\nRecovered: {img_name} on attempt {attempt + 1}.")
+                        save_image(img_file_path, response.iter_content(8192))
                         with lock:
                             progress.update(1)
+                        session.close()
                         return img_name
+
+                    elif response.status_code in (500, 502, 503, 504, 520, 522, 524):
+                        print(f"\n[HTTP {response.status_code}] Attempt {attempt + 1}: {img_name}. Retrying...")
+                        if TRY2:
+                            session.close()
+                            session = get_retry_session()
+                        continue
+
                     else:
-                        print(f"\nAttempt {attempt + 1}: Failed to download {img_name}, Status: {img_file.status_code}")
-                except requests.RequestException as e:
-                    print(f"\nAttempt {attempt + 1}: Exception while downloading {img_name}: {e}")
+                        print(f"[HTTP {response.status_code}] {img_name}. Not retrying.")
+                        break
+
+                except (RequestException, ReadTimeout) as e:
+                    print(f"[Request Error] Attempt {attempt + 1}: {img_name} - {str(e)}")
+                    if TRY2:
+                        session.close()
+                        session = get_retry_session()
+
+            fail_entry = (img_url, img_name)
+            with lock:
+                if fail_entry not in img_url_img_fail_set:
+                    img_url_img_fail.append(fail_entry)
+                    img_url_img_fail_set.add(fail_entry)
+
+            session.close()
             return None
 
-        # --- The rest remains unchanged ---
-        headers_func = headers(manga_url_main)
+
+
+
         downloaded_count = 0
         lock = threading.Lock()
         progress = tqdm(total=len(img_url_list), desc=f"Downloading {chapter_title}", unit="file")
 
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            futures = {
-                executor.submit(download_image, img_url, f"{i+1:03}.jpg", manga_dir, headers_func, progress, lock): img_url
-                for i, img_url in enumerate(img_url_list)
-            }
+        img_url_img_fail = []         # List of failed downloads
+        img_url_img_fail_set = set()  # Set for quick lookup
+
+        with ThreadPoolExecutor(max_workers=30) as executor:
+            futures = {}
+            for i, img_url in enumerate(img_url_list):
+                base_url, image_path = split_image_url(img_url)
+                request_headers = headers(manga_url_main, base_url, image_path, img_url)
+                future = executor.submit(
+                    download_image,
+                    img_url,
+                    f"{i+1:03}.webp",
+                    manga_dir,
+                    request_headers,
+                    progress,
+                    lock,
+                    img_url_img_fail,
+                    img_url_img_fail_set,
+                    TRY2=False
+                )
+                futures[future] = img_url
 
             for future in as_completed(futures):
                 if future.result():
@@ -1745,11 +1795,58 @@ def download_manga(url, manga_title = None):
         progress.close()
         print(f"\nDownloaded {downloaded_count}/{len(img_url_list)} images for {chapter_title}.")
 
+        if img_url_img_fail:
+            second_downloaded_count = 0
+            print(f"\nRetrying {len(img_url_img_fail)} failed downloads...")
+
+            failed_progress = tqdm(total=len(img_url_img_fail), desc="Retrying failed downloads", unit="file")
+            second_fail_list = []
+            second_fail_set = set()
+
+            with ThreadPoolExecutor(max_workers=10) as retry_executor:
+                retry_futures = {}
+                for img_url, img_name in img_url_img_fail:
+                    base_url, image_path = split_image_url(img_url)
+                    request_headers = headers(manga_url_main, base_url, image_path, img_url)
+                    future = retry_executor.submit(
+                        download_image,
+                        img_url,
+                        img_name,
+                        manga_dir,
+                        request_headers,
+                        failed_progress,
+                        lock,
+                        second_fail_list,
+                        second_fail_set,
+                        TRY2=True
+                    )
+                    retry_futures[future] = img_url
+
+                for retry_future in as_completed(retry_futures):
+                    if retry_future.result():
+                        downloaded_count += 1
+                        second_downloaded_count += 1
+
+            failed_progress.close()
+
+            # --- Final Report ---
+            print(f"\nFinal: Downloaded {downloaded_count-second_downloaded_count}/{len(img_url_list)} images for {chapter_title}.")
+
+            if second_fail_list:
+                print(f"\nStill failed {len(second_fail_list)} images after retry.")
+                with open(os.path.join(manga_dir, "failed_downloads.txt"), "w", encoding="utf-8") as fail_file:
+                    for img_url, img_name in second_fail_list:
+                        fail_file.write(f"{img_name} - {img_url}\n")
+                print("\nSaved failed image URLs to 'failed_downloads.txt'.")
+            else:
+                print("\nAll images downloaded successfully after retry.")
+
+
 
         chapter_size = 0
         i = 0
         for i, img_url in enumerate(img_url_list):  # Correctly unpack the tuple
-            img_name = f"{i+1:03}.jpg"  # Ensures filenames are 001.jpg, 002.jpg, etc.
+            img_name = f"{i+1:03}.webp"  # Ensures filenames are 001.jpg, 002.jpg, etc.
             img_file_path = os.path.join(manga_dir, img_name)
             
             if os.path.exists(img_file_path):  # Prevents errors if file is missing
@@ -1775,7 +1872,7 @@ def download_manga(url, manga_title = None):
 
         with zipfile.ZipFile(cbz_path, 'w', zipfile.ZIP_DEFLATED) as cbz:
             for i, img_url in enumerate(img_url_list):
-                img_name = f"{i+1:03}.jpg"
+                img_name = f"{i+1:03}.webp"
                 img_file_path = os.path.join(manga_dir, img_name)
                 
                 # Ensure the file exists before adding it to the archive
@@ -1838,194 +1935,6 @@ def download_manga(url, manga_title = None):
 
     print(f"Total estimated download size: {total_download_size_in_mb:.2f} MB")
     update_combined_log()
-
-
-
-
-def  txtnamedownlaod(txt_filepath):
-    with open(txt_filepath, 'r', encoding='utf-8') as file:
-        all_titles = [line.strip() for line in file if line.strip()]  
-    total_titles = len(all_titles)
-
-    if "mangabats" in os.path.basename(txt_filepath):
-        main_url =  "https://www.mangabats.com/search/story/"
-    elif "nelomanga" in os.path.basename(txt_filepath):
-        main_url =  "https://www.nelomanga.com/search/story/"
-    elif "mangakakalot" in os.path.basename(txt_filepath):
-        main_url =  "https://www.mangakakalot.gg/search/story/"
-
-    try:
-        # Open the text file for reading
-        with open(txt_filepath, 'r', encoding='utf-8') as file:
-
-            line_count = 0  # Initialize a line counter
-            processed_count = 0  # Counter for processed lines
-            for line in file:
-                line_count += 1  # Increment line count
-                manga_title = line.strip()
-                if manga_title:
-                    try:
-                        processed_count += 1  # Increment processed lines count
-                        print(f"Processing line {line_count}, Remaining Titles {total_titles - processed_count}: {manga_title}")
-                        # Clean and format the manga title
-                        manga_title = manga_title.encode('utf-8', 'replace').decode('utf-8')
-                        manga_title = re.sub(r'[^\x00-\x7F]', '', manga_title)
-                        manga_title = re.sub(r'[!$@#%&*\(\)\-+=\[\]{}|;:\'"<>\?/.,~]', '', manga_title, flags=re.UNICODE)
-                        cleaned_title = manga_title.lower().replace(" ", "_")
-                        search_title = re.sub(r"_+", "_", cleaned_title).strip("_")
-                        search_title = urllib.parse.quote(search_title)
-
-                        driver = init_selenium()
-                        # Construct the search URL and navigate to it
-                        search_url = f"{main_url}{search_title}"
-                        driver.get(search_url)
-                        time.sleep(5)  # Wait for the page to load
-
-
-
-                        search_items = driver.find_elements(By.CSS_SELECTOR, '.panel_story_list .story_item')
-                        manga_link = None
-
-                        # Iterate through items and find the first valid manga link
-                        for item in search_items:
-                            try:
-                                link_tag = item.find_element(By.CSS_SELECTOR, 'a')
-                                manga_link = link_tag.get_attribute('href')
-                                if manga_link:
-                                    break  # Stop once a valid link is found
-                            except Exception as e:
-                                print(f"Error finding link: {e}")
-
-                        driver.quit()
-
-                        # Process the manga link
-                        if manga_link:
-                            print(f"Manga URL found: {manga_link}")
-                            print(f"Downloading manga from: {manga_link}")  # Placeholder for download logic
-                            download_manga(manga_link)
-                        else:
-                            print(f"No results found for: {manga_title}")
-                    except Exception as e:
-                        print(f"An error occurred while processing '{manga_title}': {e}")
-    except FileNotFoundError:
-        print(f"Error: File not found at {txt_filepath}")
-    except Exception as e:
-        print(f"An error occurred: {e}")
-
-def  txturldownlaod(txt_filepath):
-    with open(txt_filepath, 'r', encoding='utf-8') as file:
-        all_titles = [line.strip() for line in file if line.strip()]  
-    total_titles = len(all_titles)
-
-    if "mangabats" in os.path.basename(txt_filepath):
-        main_url =  "https://www.mangabats.com/search/story/"
-    elif "nelomanga" in os.path.basename(txt_filepath):
-        main_url =  "https://www.nelomanga.com/search/story/"
-    elif "mangakakalot" in os.path.basename(txt_filepath):
-        main_url =  "https://www.mangakakalot.gg/search/story/"
-
-    try:
-        # Open the text file for reading
-        with open(txt_filepath, 'r', encoding='utf-8') as file:
-            
-            line_count = 0  # Initialize a line counter
-            processed_count = 0  # Counter for processed lines
-
-            for line in file:
-                line_count += 1  # Increment line count 
-                parts = line.strip().split("\t")  # Split by tab
-
-                if len(parts) > 1 and parts[0].startswith("http"):  # Ensure there's a URL
-                    url_title = unicodedata.normalize("NFKC", parts[0]).strip()  # Extract URL
-                    manga_title = unicodedata.normalize("NFKC", parts[1]).strip() if len(parts) > 1 else None
-                elif line.strip().startswith("http"):
-                    url_title = line.strip()
-                    manga_title = None
-                else:
-                    manga_title = line.strip()
-                    manga_title2 = line.strip()
-                    print(f"Finding Url for  {manga_title}:")
-                    try:
-                        # Clean and format the manga title
-                        manga_title2 = manga_title2.encode('utf-8', 'replace').decode('utf-8')
-                        manga_title2 = re.sub(r'[^\x00-\x7F]', '', manga_title2)
-                        manga_title2 = re.sub(r'[!$@#%&*\(\)\-+=\[\]{}|;:\'"<>\?/.,~]', '', manga_title2, flags=re.UNICODE)
-                        cleaned_title = manga_title2.lower().replace(" ", "_")
-                        search_title = re.sub(r"_+", "_", cleaned_title).strip("_")
-                        search_title = urllib.parse.quote(search_title)
-
-                        driver = init_selenium()
-                        # Construct the search URL and navigate to it
-                        search_url = f"{main_url}{search_title}"
-                        driver.get(search_url)
-                        time.sleep(5)  # Wait for the page to load
-
-                        search_items = driver.find_elements(By.CSS_SELECTOR, '.panel_story_list .story_item')
-                        url_title = None
-                        # Iterate through items and find the first valid manga link
-                        for item in search_items:
-                            try:
-                                link_tag = item.find_element(By.CSS_SELECTOR, 'a')
-                                url_title = link_tag.get_attribute('href')
-                                if url_title:
-                                    print(f"Url has been found for {manga_title}\t{url_title}\n")
-                                    break  # Stop once a valid link is found
-                            except Exception as e:
-                                print(f"Error finding link: {e}")
-
-                        driver.quit()
-                    except Exception as e:
-                        print(f"An error occurred while processing '{manga_title2}': {e}")
-
-
-                if manga_title == None:
-                    headers['Referer'] = url_title
-                    try:
-                        response = requests.get(url_title)
-                        response.raise_for_status()
-                        html_content = response.text
-                        soup = BeautifulSoup(html_content, 'html.parser')
-                        title_tag = soup.find('ul', class_='manga-info-text').find('li').find('h1')
-                        manga_title = title_tag.text.strip()
-                        manga_title = sanitize_filename(manga_title)
-                    except requests.exceptions.RequestException as e:
-                        print(f"Failed to fetch the manga page. Error: {e}")
-                        return
-
-                log_file_path = os.path.join(base_dir, "Download_Progress_url.txt")
-
-                # Format title for logging
-                max_length = 50
-                max_length2 = 40
-
-                # Normalize text to ensure consistent spacing
-                manga_title = unicodedata.normalize("NFKC", manga_title).strip()
-                url_title = unicodedata.normalize("NFKC", url_title).strip()
-
-                # Apply consistent padding
-                formatted_title = manga_title[:max_length].ljust(max_length)
-                formatted_title2 = url_title
-
-                log_entry = f"{formatted_title2}\t{formatted_title}\t{datetime.now().isoformat()}\n"
-
-                # Append to log file
-                with open(log_file_path, "a", encoding="utf-8") as log_file:
-                    log_file.write(log_entry)
-
-                if url_title:
-                   processed_count += 1  # Increment processed lines count
-                   print(f"Processing line {line_count}, Remaining Titles {total_titles - processed_count}:")
-                   download_manga(url_title)
-
-    except FileNotFoundError:
-        print(f"Error: File not found at {txt_filepath}")
-    except Exception as e:
-        print(f"An error occurred: {e}")
-
-
-
-
-
 
 total_update_size = 0
 def update_manga(url=None, manga_title = None):
@@ -2496,7 +2405,232 @@ def update_manga(url=None, manga_title = None):
     total_update_size += total_download_size
     total_download_size_in_mb = total_download_size / (1024 * 1024)
     print(f"Total estimated update size: {total_download_size_in_mb:.2f} MB")
-    update_combined_log()    
+    update_combined_log()   
+
+
+
+
+
+#For Code development Just Ignore It also Ignore txtnamedownlaod, check_links I'll Fix it Later
+'''
+def  txtnamedownlaod(txt_filepath):
+    with open(txt_filepath, 'r', encoding='utf-8') as file:
+        all_titles = [line.strip() for line in file if line.strip()]  
+    total_titles = len(all_titles)
+
+    if "mangabats" in os.path.basename(txt_filepath):
+        main_url =  "https://www.mangabats.com/search/story/"
+    elif "nelomanga" in os.path.basename(txt_filepath):
+        main_url =  "https://www.nelomanga.com/search/story/"
+    elif "mangakakalot" in os.path.basename(txt_filepath):
+        main_url =  "https://www.mangakakalot.gg/search/story/"
+
+    try:
+        # Open the text file for reading
+        with open(txt_filepath, 'r', encoding='utf-8') as file:
+
+            line_count = 0  # Initialize a line counter
+            processed_count = 0  # Counter for processed lines
+            for line in file:
+                line_count += 1  # Increment line count
+                manga_title = line.strip()
+                if manga_title:
+                    try:
+                        processed_count += 1  # Increment processed lines count
+                        print(f"Processing line {line_count}, Remaining Titles {total_titles - processed_count}: {manga_title}")
+                        # Clean and format the manga title
+                        manga_title = manga_title.encode('utf-8', 'replace').decode('utf-8')
+                        manga_title = re.sub(r'[^\x00-\x7F]', '', manga_title)
+                        manga_title = re.sub(r'[!$@#%&*\(\)\-+=\[\]{}|;:\'"<>\?/.,~]', '', manga_title, flags=re.UNICODE)
+                        cleaned_title = manga_title.lower().replace(" ", "_")
+                        search_title = re.sub(r"_+", "_", cleaned_title).strip("_")
+                        search_title = urllib.parse.quote(search_title)
+
+                        driver = init_selenium()
+                        # Construct the search URL and navigate to it
+                        search_url = f"{main_url}{search_title}"
+                        driver.get(search_url)
+                        time.sleep(5)  # Wait for the page to load
+
+
+
+                        search_items = driver.find_elements(By.CSS_SELECTOR, '.panel_story_list .story_item')
+                        manga_link = None
+
+                        # Iterate through items and find the first valid manga link
+                        for item in search_items:
+                            try:
+                                link_tag = item.find_element(By.CSS_SELECTOR, 'a')
+                                manga_link = link_tag.get_attribute('href')
+                                if manga_link:
+                                    break  # Stop once a valid link is found
+                            except Exception as e:
+                                print(f"Error finding link: {e}")
+
+                        driver.quit()
+
+                        # Process the manga link
+                        if manga_link:
+                            print(f"Manga URL found: {manga_link}")
+                            print(f"Downloading manga from: {manga_link}")  # Placeholder for download logic
+                            download_manga(manga_link)
+                        else:
+                            print(f"No results found for: {manga_title}")
+                    except Exception as e:
+                        print(f"An error occurred while processing '{manga_title}': {e}")
+    except FileNotFoundError:
+        print(f"Error: File not found at {txt_filepath}")
+    except Exception as e:
+        print(f"An error occurred: {e}")
+
+def  txturldownlaod(txt_filepath):
+    with open(txt_filepath, 'r', encoding='utf-8') as file:
+        all_titles = [line.strip() for line in file if line.strip()]  
+    total_titles = len(all_titles)
+
+    if "mangabats" in os.path.basename(txt_filepath):
+        main_url =  "https://www.mangabats.com/search/story/"
+    elif "nelomanga" in os.path.basename(txt_filepath):
+        main_url =  "https://www.nelomanga.com/search/story/"
+    elif "mangakakalot" in os.path.basename(txt_filepath):
+        main_url =  "https://www.mangakakalot.gg/search/story/"
+
+    try:
+        # Open the text file for reading
+        with open(txt_filepath, 'r', encoding='utf-8') as file:
+            
+            line_count = 0  # Initialize a line counter
+            processed_count = 0  # Counter for processed lines
+
+            for line in file:
+                line_count += 1  # Increment line count 
+                parts = line.strip().split("\t")  # Split by tab
+
+                if len(parts) > 1 and parts[0].startswith("http"):  # Ensure there's a URL
+                    url_title = unicodedata.normalize("NFKC", parts[0]).strip()  # Extract URL
+                    manga_title = unicodedata.normalize("NFKC", parts[1]).strip() if len(parts) > 1 else None
+                elif line.strip().startswith("http"):
+                    url_title = line.strip()
+                    manga_title = None
+                else:
+                    manga_title = line.strip()
+                    manga_title2 = line.strip()
+                    print(f"Finding Url for  {manga_title}:")
+                    try:
+                        # Clean and format the manga title
+                        manga_title2 = manga_title2.encode('utf-8', 'replace').decode('utf-8')
+                        manga_title2 = re.sub(r'[^\x00-\x7F]', '', manga_title2)
+                        manga_title2 = re.sub(r'[!$@#%&*\(\)\-+=\[\]{}|;:\'"<>\?/.,~]', '', manga_title2, flags=re.UNICODE)
+                        cleaned_title = manga_title2.lower().replace(" ", "_")
+                        search_title = re.sub(r"_+", "_", cleaned_title).strip("_")
+                        search_title = urllib.parse.quote(search_title)
+
+                        driver = init_selenium()
+                        # Construct the search URL and navigate to it
+                        search_url = f"{main_url}{search_title}"
+                        driver.get(search_url)
+                        time.sleep(5)  # Wait for the page to load
+
+                        search_items = driver.find_elements(By.CSS_SELECTOR, '.panel_story_list .story_item')
+                        url_title = None
+                        # Iterate through items and find the first valid manga link
+                        for item in search_items:
+                            try:
+                                link_tag = item.find_element(By.CSS_SELECTOR, 'a')
+                                url_title = link_tag.get_attribute('href')
+                                if url_title:
+                                    print(f"Url has been found for {manga_title}\t{url_title}\n")
+                                    break  # Stop once a valid link is found
+                            except Exception as e:
+                                print(f"Error finding link: {e}")
+
+                        driver.quit()
+                    except Exception as e:
+                        print(f"An error occurred while processing '{manga_title2}': {e}")
+
+
+                if manga_title == None:
+                    headers['Referer'] = url_title
+                    try:
+                        response = requests.get(url_title)
+                        response.raise_for_status()
+                        html_content = response.text
+                        soup = BeautifulSoup(html_content, 'html.parser')
+                        title_tag = soup.find('ul', class_='manga-info-text').find('li').find('h1')
+                        manga_title = title_tag.text.strip()
+                        manga_title = sanitize_filename(manga_title)
+                    except requests.exceptions.RequestException as e:
+                        print(f"Failed to fetch the manga page. Error: {e}")
+                        return
+
+                log_file_path = os.path.join(base_dir, "Download_Progress_url.txt")
+
+                # Format title for logging
+                max_length = 50
+                max_length2 = 40
+
+                # Normalize text to ensure consistent spacing
+                manga_title = unicodedata.normalize("NFKC", manga_title).strip()
+                url_title = unicodedata.normalize("NFKC", url_title).strip()
+
+                # Apply consistent padding
+                formatted_title = manga_title[:max_length].ljust(max_length)
+                formatted_title2 = url_title
+
+                log_entry = f"{formatted_title2}\t{formatted_title}\t{datetime.now().isoformat()}\n"
+
+                # Append to log file
+                with open(log_file_path, "a", encoding="utf-8") as log_file:
+                    log_file.write(log_entry)
+
+                if url_title:
+                   processed_count += 1  # Increment processed lines count
+                   print(f"Processing line {line_count}, Remaining Titles {total_titles - processed_count}:")
+                   download_manga(url_title)
+
+    except FileNotFoundError:
+        print(f"Error: File not found at {txt_filepath}")
+    except Exception as e:
+        print(f"An error occurred: {e}")
+
+def check_links(base_dir):
+
+    manga_folders =  [folder for folder in os.listdir(base_dir) if os.path.isdir(os.path.join(base_dir, folder))]
+    invalid_manga = []
+
+    print(f"Found {len(manga_folders)} manga folders.")
+
+    for index, folder in enumerate(manga_folders, 1):
+        if index == len(manga_folders) or index % 100 == 0:
+            print(f"Checking {index} out of {len(manga_folders)}")
+        else:
+            print(f"Checking {index} out of {len(manga_folders)}",  end="\r")
+
+        manga_folder_path = os.path.join(base_dir, folder)
+        url_file = os.path.join(manga_folder_path, "url.txt")
+    
+        with open(url_file, "r", encoding="utf-8") as file:
+           url = file.readline().strip()
+
+        try:
+            response = requests.get(url, timeout=5, headers=headers)
+            if response.status_code >= 400 or response.status_code == 404 or "<title>404" in response.text or "Page Not Found" in response.text:
+                print(f"Error occured while Checking for {index} {folder}")
+                invalid_manga.append(f'{index} {folder}')
+                continue  # No need to check further links for this manga
+        except (requests.RequestException, requests.Timeout) as e:
+            print(f"Error while Checking {index} {folder}")
+            print(f"Error occured for {url}: {e}")
+            invalid_manga.append(f'{index} {folder}')
+            continue
+
+
+    return invalid_manga
+'''
+
+
+
+ 
 
 
 
@@ -2533,39 +2667,7 @@ def select_and_update_folders():
         else:
             print(f"Invalid selection: {num}. Skipping...")
 
-def check_links(base_dir):
 
-    manga_folders =  [folder for folder in os.listdir(base_dir) if os.path.isdir(os.path.join(base_dir, folder))]
-    invalid_manga = []
-
-    print(f"Found {len(manga_folders)} manga folders.")
-
-    for index, folder in enumerate(manga_folders, 1):
-        if index == len(manga_folders) or index % 100 == 0:
-            print(f"Checking {index} out of {len(manga_folders)}")
-        else:
-            print(f"Checking {index} out of {len(manga_folders)}",  end="\r")
-
-        manga_folder_path = os.path.join(base_dir, folder)
-        url_file = os.path.join(manga_folder_path, "url.txt")
-    
-        with open(url_file, "r", encoding="utf-8") as file:
-           url = file.readline().strip()
-
-        try:
-            response = requests.get(url, timeout=5, headers=headers)
-            if response.status_code >= 400 or response.status_code == 404 or "<title>404" in response.text or "Page Not Found" in response.text:
-                print(f"Error occured while Checking for {index} {folder}")
-                invalid_manga.append(f'{index} {folder}')
-                continue  # No need to check further links for this manga
-        except (requests.RequestException, requests.Timeout) as e:
-            print(f"Error while Checking {index} {folder}")
-            print(f"Error occured for {url}: {e}")
-            invalid_manga.append(f'{index} {folder}')
-            continue
-
-
-    return invalid_manga
 
 def handle_user_input():
     # Ask for initial input: '1', 'many', or 'update'
