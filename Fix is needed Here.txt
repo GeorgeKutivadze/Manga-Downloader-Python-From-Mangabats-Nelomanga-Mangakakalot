@@ -1,0 +1,152 @@
+def get_retry_session(max_retries=5, backoff_factor=1.5, status_forcelist=(500, 502, 503, 504, 520, 522, 524)):
+        session = requests.Session()
+        retry = Retry(
+            total=max_retries,
+            read=max_retries,
+            connect=max_retries,
+            backoff_factor=backoff_factor,
+            status_forcelist=status_forcelist,
+            raise_on_status=False,
+            respect_retry_after_header=True,
+        )
+        adapter = HTTPAdapter(max_retries=retry)
+        session.mount('http://', adapter)
+        session.mount('https://', adapter)
+        return session
+
+def save_image(file_path, content):
+    with open(file_path, "wb") as f:
+        for chunk in content:
+            if chunk:  # make sure it's not a keep-alive chunk
+                f.write(chunk)
+
+
+def download_image(img_url, img_name, manga_dir, headers, progress, lock, img_url_img_fail, img_url_img_fail_set, TRY2=False):
+    img_file_path = os.path.join(manga_dir, img_name)
+    session = get_retry_session()
+
+    max_attempts = 10 if TRY2 else 2
+
+    for attempt in range(max_attempts):
+        try:
+            if TRY2:
+                response = requests.get(img_url, headers=headers)
+            else:
+                response = session.get(img_url, headers=headers)
+
+            if response.status_code == 200:
+                if attempt > 0:
+                    print(f"\nRecovered: {img_name} on attempt {attempt + 1}.")
+                save_image(img_file_path, response.iter_content(8192))
+                with lock:
+                    progress.update(1)
+                session.close()
+                return img_name
+
+            elif response.status_code in (500, 502, 503, 504, 520, 522, 524):
+                print(f"\n[HTTP {response.status_code}] Attempt {attempt + 1}: {img_name}. Retrying...")
+                if TRY2:
+                    session.close()
+                    session = get_retry_session()
+                continue
+
+            else:
+                print(f"[HTTP {response.status_code}] {img_name}. Not retrying.")
+                break
+
+        except (RequestException, ReadTimeout) as e:
+            print(f"[Request Error] Attempt {attempt + 1}: {img_name} - {str(e)}")
+            if TRY2:
+                session.close()
+                session = get_retry_session()
+
+    fail_entry = (img_url, img_name)
+    with lock:
+        if fail_entry not in img_url_img_fail_set:
+            img_url_img_fail.append(fail_entry)
+            img_url_img_fail_set.add(fail_entry)
+
+    session.close()
+    return None
+
+
+
+
+downloaded_count = 0
+lock = threading.Lock()
+progress = tqdm(total=len(img_url_list), desc=f"Downloading {chapter_title}", unit="file")
+
+img_url_img_fail = []         # List of failed downloads
+img_url_img_fail_set = set()  # Set for quick lookup
+
+with ThreadPoolExecutor(max_workers=30) as executor:
+    futures = {}
+    for i, img_url in enumerate(img_url_list):
+        base_url, image_path = split_image_url(img_url)
+        request_headers = headers(manga_url_main, base_url, image_path, img_url)
+        future = executor.submit(
+            download_image,
+            img_url,
+            f"{i+1:03}.webp",
+            manga_dir,
+            request_headers,
+            progress,
+            lock,
+            img_url_img_fail,
+            img_url_img_fail_set,
+            TRY2=False
+        )
+        futures[future] = img_url
+
+    for future in as_completed(futures):
+        if future.result():
+            downloaded_count += 1
+
+progress.close()
+print(f"\nDownloaded {downloaded_count}/{len(img_url_list)} images for {chapter_title}.")
+
+if img_url_img_fail:
+    second_downloaded_count = 0
+    print(f"\nRetrying {len(img_url_img_fail)} failed downloads...")
+
+    failed_progress = tqdm(total=len(img_url_img_fail), desc="Retrying failed downloads", unit="file")
+    second_fail_list = []
+    second_fail_set = set()
+
+    with ThreadPoolExecutor(max_workers=10) as retry_executor:
+        retry_futures = {}
+        for img_url, img_name in img_url_img_fail:
+            base_url, image_path = split_image_url(img_url)
+            request_headers = headers(manga_url_main, base_url, image_path, img_url)
+            future = retry_executor.submit(
+                download_image,
+                img_url,
+                img_name,
+                manga_dir,
+                request_headers,
+                failed_progress,
+                lock,
+                second_fail_list,
+                second_fail_set,
+                TRY2=True
+            )
+            retry_futures[future] = img_url
+
+        for retry_future in as_completed(retry_futures):
+            if retry_future.result():
+                downloaded_count += 1
+                second_downloaded_count += 1
+
+    failed_progress.close()
+
+    # --- Final Report ---
+    print(f"\nFinal: Downloaded {downloaded_count-second_downloaded_count}/{len(img_url_list)} images for {chapter_title}.")
+
+    if second_fail_list:
+        print(f"\nStill failed {len(second_fail_list)} images after retry.")
+        with open(os.path.join(manga_dir, "failed_downloads.txt"), "w", encoding="utf-8") as fail_file:
+            for img_url, img_name in second_fail_list:
+                fail_file.write(f"{img_name} - {img_url}\n")
+        print("\nSaved failed image URLs to 'failed_downloads.txt'.")
+    else:
+        print("\nAll images downloaded successfully after retry.")
